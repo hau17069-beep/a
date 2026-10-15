@@ -1,0 +1,9 @@
+Package: com.yourname.foodyjb
+Name: FoodyJB
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Jailbreak bypass cho Foody NowPartner
+Maintainer: Your Name
+Author: Your Name
+Section: Tweaks
+Depends: ellekit
