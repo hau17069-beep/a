@@ -1,12 +1,11 @@
 // FoodyJB — Jailbreak Bypass cho vn.foody.nowpartner
-// Cover: symlink, FS JB path, write test, sandbox_check, P_TRACED, CS_DEBUGGED,
-//        dyld filter, NSFileManager
 
 #import <Foundation/Foundation.h>
 #import <substrate.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
 #import <sys/mount.h>
+#import <sys/errno.h>
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
 #import <errno.h>
@@ -20,7 +19,6 @@ extern int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buf, int size);
 extern int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
 extern int csops_audittoken(pid_t pid, unsigned int ops, void *useraddr, size_t usersize, audit_token_t *token);
 extern int sandbox_check(pid_t pid, const char *op, int type, ...);
-extern char *__error(void);
 
 // ============ CONSTANTS ============
 #define CS_DEBUGGED  0x10000000
@@ -97,7 +95,7 @@ static BOOL isWriteTest(const char *cp) {
             strstr(cp, ".sb-") != NULL);
 }
 
-// ============ DYLIB KEYWORDS (cho task_info filter) ============
+// ============ DYLIB KEYWORDS ============
 static BOOL isBadDylibName(const char *cp) {
     if (!cp) return NO;
     return (strstr(cp, "FoodyJB") != NULL ||
@@ -207,13 +205,11 @@ static int new_sandbox_check(pid_t pid, const char *op, int type, ...) {
     if (op && path &&
         (strcmp(op, "file-write-create") == 0 ||
          strcmp(op, "file-write-data") == 0 ||
-         strcmp(op, "file-write-unlink") == 0 ||
-         strcmp(op, "file-write-mount") == 0) &&
+         strcmp(op, "file-write-unlink") == 0) &&
         isWriteTest(path)) {
         return 1;
     }
     
-    // Gọi hàm gốc với args đúng
     va_list args2;
     va_start(args2, type);
     const char *p2 = va_arg(args2, const char *);
@@ -294,12 +290,13 @@ static const char *new_dyld_get_image_name(uint32_t idx) {
     return name;
 }
 
-// -------- 15. TASK_INFO (filter dyld list) --------
-typedef struct {
+// -------- 15. TASK_INFO — FILTER DYLD LIST --------
+// Dùng tên struct khác để tránh conflict với SDK
+struct my_task_dyld_info {
     uintptr_t all_image_info_addr;
     uintptr_t all_image_info_size;
     integer_t all_image_info_format;
-} task_dyld_info_t;
+};
 
 static kern_return_t (*orig_task_info)(task_name_t, task_flavor_t, task_info_t, mach_msg_type_number_t *);
 static kern_return_t new_task_info(task_name_t task, task_flavor_t flavor,
@@ -307,7 +304,7 @@ static kern_return_t new_task_info(task_name_t task, task_flavor_t flavor,
     kern_return_t r = orig_task_info(task, flavor, info, count);
     if (r != KERN_SUCCESS || flavor != 17 || !info) return r;
     
-    task_dyld_info_t *tdi = (task_dyld_info_t *)info;
+    struct my_task_dyld_info *tdi = (struct my_task_dyld_info *)info;
     void *allInfos = (void *)tdi->all_image_info_addr;
     if (!allInfos) return r;
     
