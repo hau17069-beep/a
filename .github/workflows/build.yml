@@ -1,0 +1,46 @@
+name: Build FoodyJB
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: Install Theos
+      run: |
+        export THEOS=$HOME/theos
+        git clone --recursive https://github.com/theos/theos.git $THEOS
+        echo "THEOS=$THEOS" >> $GITHUB_ENV
+        echo "$THEOS/bin" >> $GITHUB_PATH
+    
+    - name: Install deps
+      run: brew install ldid xz make
+    
+    - name: Download iOS SDK
+      run: |
+        mkdir -p $THEOS/sdks
+        cd $THEOS/sdks
+        git clone --depth 1 https://github.com/theos/sdks.git tmp
+        mv tmp/*.sdk . 2>/dev/null || true
+        rm -rf tmp
+        ls -la $THEOS/sdks
+    
+    - name: Build
+      run: |
+        make package FINALPACKAGE=1
+    
+    - name: Find deb
+      run: find . -name "*.deb" -type f
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: FoodyJB-deb
+        path: packages/*.deb
