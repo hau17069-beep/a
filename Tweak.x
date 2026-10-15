@@ -1,5 +1,4 @@
-// FoodyJB — Jailbreak Bypass cho vn.foody.nowpartner
-
+// FoodyJB v2 — Extended JB Bypass
 #import <Foundation/Foundation.h>
 #import <substrate.h>
 #import <sys/stat.h>
@@ -19,6 +18,9 @@ extern int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buf, int size);
 extern int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
 extern int csops_audittoken(pid_t pid, unsigned int ops, void *useraddr, size_t usersize, audit_token_t *token);
 extern int sandbox_check(pid_t pid, const char *op, int type, ...);
+extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
+extern int getfsstat(struct statfs *buf, int bufsize, int flags);
+extern int getfsstat64(struct statfs *buf, int bufsize, int flags);
 
 // ============ CONSTANTS ============
 #define CS_DEBUGGED  0x10000000
@@ -30,8 +32,9 @@ extern int sandbox_check(pid_t pid, const char *op, int type, ...);
 #define S_IFMT_M     0xF000
 #define S_IFLNK_M    0xA000
 #define S_IFDIR_M    0x4000
+#define PT_DENY_ATTACH 31
 
-// ============ JB KEYWORDS ============
+// ============ KEYWORDS ============
 static NSArray *gJBKeywords(void) {
     static NSArray *a = nil;
     static dispatch_once_t once;
@@ -69,7 +72,6 @@ static BOOL isJBPath(const char *cp) {
     return NO;
 }
 
-// ============ SYMLINK PATHS ============
 static NSArray *gSymlinkPaths(void) {
     static NSArray *a = nil;
     static dispatch_once_t once;
@@ -87,7 +89,6 @@ static BOOL isSysSymlink(const char *cp) {
     return [gSymlinkPaths() containsObject:p];
 }
 
-// ============ WRITE TEST PATHS ============
 static BOOL isWriteTest(const char *cp) {
     if (!cp) return NO;
     return (strstr(cp, "/private/test") != NULL ||
@@ -95,7 +96,6 @@ static BOOL isWriteTest(const char *cp) {
             strstr(cp, ".sb-") != NULL);
 }
 
-// ============ DYLIB KEYWORDS ============
 static BOOL isBadDylibName(const char *cp) {
     if (!cp) return NO;
     return (strstr(cp, "FoodyJB") != NULL ||
@@ -112,38 +112,36 @@ static BOOL isBadDylibName(const char *cp) {
             strstr(cp, "gum-js") != NULL ||
             strstr(cp, "dopamine") != NULL ||
             strstr(cp, "palera1n") != NULL ||
-            strstr(cp, "TweakInject") != NULL);
+            strstr(cp, "TweakInject") != NULL ||
+            strstr(cp, "jbroot") != NULL ||
+            strstr(cp, "roothide") != NULL);
 }
 
 // ================================================================
 // ============ HOOKS ============
 // ================================================================
 
-// -------- 1. LSTAT --------
+// -------- 1-6. FS HOOKS --------
 static int (*orig_lstat)(const char *, struct stat *);
 static int new_lstat(const char *path, struct stat *buf) {
     int r = orig_lstat(path, buf);
     if (r == 0 && buf && isSysSymlink(path)) {
-        if ((buf->st_mode & S_IFMT_M) == S_IFLNK_M) {
+        if ((buf->st_mode & S_IFMT_M) == S_IFLNK_M)
             buf->st_mode = (buf->st_mode & ~S_IFMT_M) | S_IFDIR_M;
-        }
     }
     return r;
 }
 
-// -------- 2. STAT --------
 static int (*orig_stat)(const char *, struct stat *);
 static int new_stat(const char *path, struct stat *buf) {
     int r = orig_stat(path, buf);
     if (r == 0 && buf && isSysSymlink(path)) {
-        if ((buf->st_mode & S_IFMT_M) == S_IFLNK_M) {
+        if ((buf->st_mode & S_IFMT_M) == S_IFLNK_M)
             buf->st_mode = (buf->st_mode & ~S_IFMT_M) | S_IFDIR_M;
-        }
     }
     return r;
 }
 
-// -------- 3. READLINK --------
 static ssize_t (*orig_readlink)(const char *, char *, size_t);
 static ssize_t new_readlink(const char *path, char *buf, size_t size) {
     if (isSysSymlink(path)) { errno = ENOENT; return -1; }
@@ -156,21 +154,18 @@ static ssize_t new_readlinkat(int fd, const char *path, char *buf, size_t size) 
     return orig_readlinkat(fd, path, buf, size);
 }
 
-// -------- 4. FOPEN --------
 static FILE *(*orig_fopen)(const char *, const char *);
 static FILE *new_fopen(const char *path, const char *mode) {
     if (isJBPath(path)) { errno = ENOENT; return NULL; }
     return orig_fopen(path, mode);
 }
 
-// -------- 5. ACCESS --------
 static int (*orig_access)(const char *, int);
 static int new_access(const char *path, int mode) {
     if (isJBPath(path)) { errno = ENOENT; return -1; }
     return orig_access(path, mode);
 }
 
-// -------- 6. OPEN --------
 static int (*orig_open)(const char *, int, ...);
 static int new_open(const char *path, int flags, ...) {
     if (isJBPath(path)) { errno = ENOENT; return -1; }
@@ -180,25 +175,22 @@ static int new_open(const char *path, int flags, ...) {
     return orig_open(path, flags, mode);
 }
 
-// -------- 7. MKDIR --------
 static int (*orig_mkdir)(const char *, mode_t);
 static int new_mkdir(const char *path, mode_t mode) {
     if (isWriteTest(path)) { errno = EROFS; return -1; }
     return orig_mkdir(path, mode);
 }
 
-// -------- 8. CREAT --------
 static int (*orig_creat)(const char *, mode_t);
 static int new_creat(const char *path, mode_t mode) {
     if (isWriteTest(path)) { errno = EROFS; return -1; }
     return orig_creat(path, mode);
 }
 
-// -------- 9. SANDBOX_CHECK --------
+// -------- 7. SANDBOX_CHECK --------
 static int (*orig_sandbox_check)(pid_t, const char *, int, ...);
 static int new_sandbox_check(pid_t pid, const char *op, int type, ...) {
-    va_list args;
-    va_start(args, type);
+    va_list args; va_start(args, type);
     const char *path = va_arg(args, const char *);
     va_end(args);
     
@@ -210,14 +202,13 @@ static int new_sandbox_check(pid_t pid, const char *op, int type, ...) {
         return 1;
     }
     
-    va_list args2;
-    va_start(args2, type);
-    const char *p2 = va_arg(args2, const char *);
-    va_end(args2);
+    va_list a2; va_start(a2, type);
+    const char *p2 = va_arg(a2, const char *);
+    va_end(a2);
     return orig_sandbox_check(pid, op, type, p2);
 }
 
-// -------- 10. SYSCTL --------
+// -------- 8. SYSCTL --------
 static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
 static int new_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp,
                       void *newp, size_t newlen) {
@@ -232,7 +223,7 @@ static int new_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp,
     return r;
 }
 
-// -------- 11. PROC_PIDINFO --------
+// -------- 9. PROC_PIDINFO --------
 static int (*orig_proc_pidinfo)(int, int, uint64_t, void *, int);
 static int new_proc_pidinfo(int pid, int flavor, uint64_t arg, void *buf, int size) {
     int r = orig_proc_pidinfo(pid, flavor, arg, buf, size);
@@ -247,26 +238,29 @@ static int new_proc_pidinfo(int pid, int flavor, uint64_t arg, void *buf, int si
     return r;
 }
 
-// -------- 12. CSOPS --------
+// -------- 10. CSOPS --------
 static int (*orig_csops)(pid_t, unsigned int, void *, size_t);
 static int new_csops(pid_t pid, unsigned int ops, void *addr, size_t size) {
     int r = orig_csops(pid, ops, addr, size);
-    if (r == 0 && addr && size >= 4) {
-        *(uint32_t *)addr &= ~CS_CLEAR;
-    }
+    if (r == 0 && addr && size >= 4) *(uint32_t *)addr &= ~CS_CLEAR;
     return r;
 }
 
 static int (*orig_csops_audittoken)(pid_t, unsigned int, void *, size_t, audit_token_t *);
 static int new_csops_audittoken(pid_t pid, unsigned int ops, void *addr, size_t size, audit_token_t *tok) {
     int r = orig_csops_audittoken(pid, ops, addr, size, tok);
-    if (r == 0 && addr && size >= 4) {
-        *(uint32_t *)addr &= ~CS_CLEAR;
-    }
+    if (r == 0 && addr && size >= 4) *(uint32_t *)addr &= ~CS_CLEAR;
     return r;
 }
 
-// -------- 13. GETENV --------
+// -------- 11. PTRACE (mới) --------
+static int (*orig_ptrace)(int, pid_t, caddr_t, int);
+static int new_ptrace(int request, pid_t pid, caddr_t addr, int data) {
+    if (request == PT_DENY_ATTACH) return 0;
+    return orig_ptrace(request, pid, addr, data);
+}
+
+// -------- 12. GETENV --------
 static char *(*orig_getenv)(const char *);
 static char *new_getenv(const char *name) {
     if (name && (strstr(name, "DYLD_INSERT") ||
@@ -280,18 +274,15 @@ static char *new_getenv(const char *name) {
     return orig_getenv(name);
 }
 
-// -------- 14. DYLD_GET_IMAGE_NAME --------
+// -------- 13. DYLD GET IMAGE NAME --------
 static const char *(*orig_dyld_get_image_name)(uint32_t);
 static const char *new_dyld_get_image_name(uint32_t idx) {
     const char *name = orig_dyld_get_image_name(idx);
-    if (isBadDylibName(name)) {
-        return "/usr/lib/libSystem.B.dylib";
-    }
+    if (isBadDylibName(name)) return "/usr/lib/libSystem.B.dylib";
     return name;
 }
 
-// -------- 15. TASK_INFO — FILTER DYLD LIST --------
-// Dùng tên struct khác để tránh conflict với SDK
+// -------- 14. TASK_INFO --------
 struct my_task_dyld_info {
     uintptr_t all_image_info_addr;
     uintptr_t all_image_info_size;
@@ -319,26 +310,68 @@ static kern_return_t new_task_info(task_name_t task, task_flavor_t flavor,
         char *entry = (char *)arr + i * 24;
         const char *pathPtr = *(const char **)(entry + 8);
         if (isBadDylibName(pathPtr)) continue;
-        if (safeIdx != i) {
-            memcpy((char *)arr + safeIdx * 24, entry, 24);
-        }
+        if (safeIdx != i) memcpy((char *)arr + safeIdx * 24, entry, 24);
         safeIdx++;
     }
-    
-    if (safeIdx < cnt) {
-        *cntPtr = safeIdx;
+    if (safeIdx < cnt) *cntPtr = safeIdx;
+    return r;
+}
+
+// -------- 15. STATFS (mới) --------
+static int (*orig_statfs)(const char *, struct statfs *);
+static int new_statfs(const char *path, struct statfs *buf) {
+    int r = orig_statfs(path, buf);
+    if (r == 0 && buf && path) {
+        // Spoof fstypename = "apfs" cho các path hệ thống
+        if (strcmp(path, "/") == 0 || strcmp(path, "/var") == 0 ||
+            strcmp(path, "/private") == 0) {
+            char *fstype = (char *)buf + 0x44; // offset f_fstypename trên arm64
+            strncpy(fstype, "apfs", 15);
+            fstype[15] = 0;
+        }
     }
     return r;
 }
 
-// -------- 16. NSFileManager --------
+// -------- 16. GETFSSTAT (mới) --------
+static int (*orig_getfsstat)(struct statfs *, int, int);
+static int new_getfsstat(struct statfs *buf, int bufsize, int flags) {
+    int r = orig_getfsstat(buf, bufsize, flags);
+    if (r > 0 && buf) {
+        int count = r / sizeof(struct statfs);
+        for (int i = 0; i < count; i++) {
+            char *from = (char *)buf[i].f_mntfromname;
+            if (strstr(from, "jbroot") || strstr(from, "roothide") ||
+                strstr(from, "dopamine") || strstr(from, "palera1n")) {
+                // Đổi tên mount để trông như hệ thống
+                strncpy(buf[i].f_mntfromname, "/dev/disk1s1", 1023);
+                char *fstype = (char *)buf[i].f_fstypename;
+                strncpy(fstype, "apfs", 15);
+            }
+        }
+    }
+    return r;
+}
+
+// -------- 17. DLSYM BLOCK (mới) --------
+static void *(*orig_dlsym)(void *, const char *);
+static void *new_dlsym(void *handle, const char *sym) {
+    if (sym) {
+        if (strcmp(sym, "dyld_all_image_infos") == 0 ||
+            strcmp(sym, "_dyld_all_image_infos") == 0) {
+            return NULL;
+        }
+    }
+    return orig_dlsym(handle, sym);
+}
+
+// -------- 18. NSFileManager --------
 %hook NSFileManager
 
 - (BOOL)fileExistsAtPath:(NSString *)path {
     if (isJBPath([path UTF8String])) return NO;
     return %orig;
 }
-
 - (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDir {
     if (isJBPath([path UTF8String])) {
         if (isDir) *isDir = NO;
@@ -346,20 +379,30 @@ static kern_return_t new_task_info(task_name_t task, task_flavor_t flavor,
     }
     return %orig;
 }
-
 - (BOOL)isWritableFileAtPath:(NSString *)path {
     if (isJBPath([path UTF8String])) return NO;
     return %orig;
 }
-
 - (BOOL)isExecutableFileAtPath:(NSString *)path {
     if (isJBPath([path UTF8String])) return NO;
     return %orig;
 }
-
 - (BOOL)isReadableFileAtPath:(NSString *)path {
     if (isJBPath([path UTF8String])) return NO;
     return %orig;
+}
+%end
+
+// -------- 19. NSProcessInfo (mới) --------
+%hook NSProcessInfo
+
+- (NSDictionary *)environment {
+    NSMutableDictionary *d = [%orig mutableCopy];
+    [d removeObjectForKey:@"DYLD_INSERT_LIBRARIES"];
+    [d removeObjectForKey:@"DYLD_LIBRARY_PATH"];
+    [d removeObjectForKey:@"DYLD_FRAMEWORK_PATH"];
+    [d removeObjectForKey:@"JBPATHLOG"];
+    return d;
 }
 
 %end
@@ -369,7 +412,7 @@ static kern_return_t new_task_info(task_name_t task, task_flavor_t flavor,
 // ================================================================
 %ctor {
     @autoreleasepool {
-        NSLog(@"[FoodyJB] Loading...");
+        NSLog(@"[FoodyJB] Loading v2...");
         
         MSHookFunction((void *)lstat,      (void *)new_lstat,      (void **)&orig_lstat);
         MSHookFunction((void *)stat,       (void *)new_stat,       (void **)&orig_stat);
@@ -385,10 +428,14 @@ static kern_return_t new_task_info(task_name_t task, task_flavor_t flavor,
         MSHookFunction((void *)proc_pidinfo, (void *)new_proc_pidinfo, (void **)&orig_proc_pidinfo);
         MSHookFunction((void *)csops,      (void *)new_csops,      (void **)&orig_csops);
         MSHookFunction((void *)csops_audittoken, (void *)new_csops_audittoken, (void **)&orig_csops_audittoken);
+        MSHookFunction((void *)ptrace,     (void *)new_ptrace,     (void **)&orig_ptrace);
         MSHookFunction((void *)getenv,     (void *)new_getenv,     (void **)&orig_getenv);
         MSHookFunction((void *)_dyld_get_image_name, (void *)new_dyld_get_image_name, (void **)&orig_dyld_get_image_name);
         MSHookFunction((void *)task_info,  (void *)new_task_info,  (void **)&orig_task_info);
+        MSHookFunction((void *)statfs,     (void *)new_statfs,     (void **)&orig_statfs);
+        MSHookFunction((void *)getfsstat,  (void *)new_getfsstat,  (void **)&orig_getfsstat);
+        MSHookFunction((void *)dlsym,      (void *)new_dlsym,      (void **)&orig_dlsym);
         
-        NSLog(@"[FoodyJB] ✅ Loaded successfully");
+        NSLog(@"[FoodyJB] ✅ v2 Loaded");
     }
 }
